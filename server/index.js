@@ -254,7 +254,7 @@ async function sendVerificationEmail(email, token, name) {
 }
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', time: new Date().toISOString() })
+  res.json({ status: 'ok', time: new Date().toISOString(), message: 'Server is running' })
 })
 
 app.post('/api/auth/register', async (req, res) => {
