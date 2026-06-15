@@ -45,10 +45,10 @@ app.get('/api/health', (req, res) => {
 
 const isVercel = process.env.VERCEL === '1' || process.env.VERCEL === 'true'
 
-// En Vercel, si la base de datos no esta configurada explicitamente con
-// DATABASE_URL, evitamos crear conexiones que se quedan colgadas y causan
-// timeouts de 300 segundos. En local se usa la cadena por defecto.
-const dbUrl = isVercel ? process.env.DATABASE_URL : (process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_y4O3WKQGIxhC@ep-bold-king-ahp3zu9v-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require')
+// En Vercel desactivamos PostgreSQL por completo para evitar que las funciones
+// serverless se queden colgadas 300 segundos esperando una conexion a Neon.
+// En local se usa la cadena por defecto si no hay DATABASE_URL configurada.
+const dbUrl = isVercel ? null : (process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_y4O3WKQGIxhC@ep-bold-king-ahp3zu9v-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require')
 
 let dbDisabled = !dbUrl
 let pool = null
@@ -114,6 +114,7 @@ let dbInitError = null
 let dbInitPromise = null
 
 async function initializeDatabase() {
+  if (dbDisabled) return
   if (dbInitialized || process.env.SKIP_DB_INIT === 'true') return
   if (dbInitError) throw dbInitError
   if (dbInitPromise) return dbInitPromise
