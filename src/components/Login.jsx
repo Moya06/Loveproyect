@@ -19,29 +19,33 @@ export default function Login({ onLogin, onCupidoLogin }) {
     setLoading(true)
     setError('')
     setSuccess('')
-    
+    setVerificationUrl('')
+
     try {
       const endpoint = isRegister ? '/auth/register' : '/auth/login'
-      const body = isRegister 
+      const body = isRegister
         ? { email: form.email, password: form.password, name: form.name }
         : { email: form.email, password: form.password }
-      
+
       const res = await fetch(`${API_URL}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       })
+
       let data
-      try {
+      const contentType = res.headers.get('content-type') || ''
+      if (contentType.includes('application/json')) {
         data = await res.json()
-      } catch (parseErr) {
-        // response was not JSON - read as text and throw
-        const text = await res.text().catch(() => '')
-        throw new Error(text || `HTTP ${res.status}`)
+      } else {
+        const text = await res.text()
+        // Si la respuesta es HTML (error del servidor/proxy), mostrar mensaje util
+        const cleanText = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120)
+        throw new Error(cleanText || `Error HTTP ${res.status}`)
       }
-      
-      if (!res.ok) throw new Error(data.error || data || `HTTP ${res.status}`)
-      
+
+      if (!res.ok) throw new Error(data.error || data.message || `Error HTTP ${res.status}`)
+
       if (isRegister) {
         setSuccess(data.message)
         if (data.verification_url) {
@@ -52,7 +56,8 @@ export default function Login({ onLogin, onCupidoLogin }) {
         onLogin(data)
       }
     } catch (err) {
-      setError(err.message || 'Error de servidor')
+      console.error('Login error:', err)
+      setError(err.message || 'No se pudo conectar con el servidor. Intenta de nuevo.')
     } finally {
       setLoading(false)
     }
