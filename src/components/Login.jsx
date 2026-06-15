@@ -27,11 +27,17 @@ export default function Login({ onLogin, onCupidoLogin }) {
         ? { email: form.email, password: form.password, name: form.name }
         : { email: form.email, password: form.password }
 
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 10000)
+
       const res = await fetch(`${API_URL}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        signal: controller.signal
       })
+
+      clearTimeout(timeoutId)
 
       let data
       const contentType = res.headers.get('content-type') || ''
@@ -57,7 +63,11 @@ export default function Login({ onLogin, onCupidoLogin }) {
       }
     } catch (err) {
       console.error('Login error:', err)
-      setError(err.message || 'No se pudo conectar con el servidor. Intenta de nuevo.')
+      if (err.name === 'AbortError') {
+        setError('El servidor tardo demasiado en responder. Intenta de nuevo.')
+      } else {
+        setError(err.message || 'No se pudo conectar con el servidor. Intenta de nuevo.')
+      }
     } finally {
       setLoading(false)
     }
