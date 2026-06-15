@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Eye, Image, FileText, Settings2, Heart, Plus, Trash2, Upload, Film, Globe, Lock, Edit2, Music } from 'lucide-react'
 import { API_URL } from '../config'
+import { getLocalPages, saveLocalPage, getLocalPageData, saveLocalPageData, fetchWithTimeout } from '../lib/offlineStore'
 
 function formatDateForInput(dateValue) {
   if (!dateValue) return ''
@@ -39,7 +40,7 @@ export default function PageEditor({ user }) {
 
   const fetchPage = async () => {
     try {
-      const res = await fetch(`${API_URL}/corazon/pages/${id}`, { headers: { 'x-user-id': user.id } })
+      const res = await fetchWithTimeout(`${API_URL}/corazon/pages/${id}`, { headers: { 'x-user-id': user.id } })
       if (!res.ok) throw new Error('No encontrado')
       const data = await res.json()
       setPage(data)
@@ -48,9 +49,23 @@ export default function PageEditor({ user }) {
       setTimeline(data.timeline || [])
       setSettings(data.settings || {})
       setVideos(data.videos || [])
+      saveLocalPage(user.id, data)
+      saveLocalPageData(id, { photos: data.photos || [], letter: data.letter || { content: '', signature_text: '', greeting: 'Mi amor,' }, timeline: data.timeline || [], settings: data.settings || {}, videos: data.videos || [] })
     } catch (err) {
-      console.error('Error:', err)
-      navigate('/')
+      console.error('Error cargando pagina:', err)
+      const localPages = getLocalPages(user.id)
+      const localPage = localPages.find(p => p.id === id)
+      if (localPage) {
+        setPage(localPage)
+        const localData = getLocalPageData(id)
+        setPhotos(localData.photos || [])
+        setLetter(localData.letter || { content: '', signature_text: '', greeting: 'Mi amor,' })
+        setTimeline(localData.timeline || [])
+        setSettings(localData.settings || {})
+        setVideos(localData.videos || [])
+      } else {
+        navigate('/')
+      }
     }
     setLoading(false)
   }
@@ -59,7 +74,7 @@ export default function PageEditor({ user }) {
     if (!page) return
     setSaving(true)
     try {
-      const res = await fetch(`${API_URL}/corazon/pages/${id}`, {
+      const res = await fetchWithTimeout(`${API_URL}/corazon/pages/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', 'x-user-id': user.id },
         body: JSON.stringify(updates)
@@ -69,11 +84,16 @@ export default function PageEditor({ user }) {
         throw new Error(err.error)
       }
       const updated = await res.json()
-      setPage(prev => ({ ...prev, ...updated }))
+      const newPage = { ...page, ...updated }
+      setPage(newPage)
+      saveLocalPage(user.id, newPage)
       showMessage('Guardado correctamente')
     } catch (err) {
-      console.error('Error:', err)
-      showMessage('Error al guardar: ' + err.message)
+      console.error('Error guardando pagina:', err)
+      const newPage = { ...page, ...updates, updated_at: new Date().toISOString() }
+      setPage(newPage)
+      saveLocalPage(user.id, newPage)
+      showMessage('Guardado localmente (modo sin conexion)')
     }
     setSaving(false)
   }
@@ -123,90 +143,112 @@ export default function PageEditor({ user }) {
   const addPhotoWithSettings = async () => {
     if (!editingPhoto) return
     try {
-      const res = await fetch(`${API_URL}/corazon/pages/${id}/photos`, {
+      const res = await fetchWithTimeout(`${API_URL}/corazon/pages/${id}/photos`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-user-id': user.id },
         body: JSON.stringify(editingPhoto)
       })
       if (!res.ok) throw new Error('Error al agregar foto')
       const newPhoto = await res.json()
-      setPhotos([...photos, newPhoto])
+      const updated = [...photos, newPhoto]
+      setPhotos(updated)
       setEditingPhoto(null)
+      saveLocalPageData(id, { ...getLocalPageData(id), photos: updated })
       showMessage('Foto agregada')
     } catch (err) {
-      console.error('Error:', err)
-      showMessage('Error al agregar foto')
+      console.error('Error agregando foto:', err)
+      const localPhoto = { ...editingPhoto, id: 'local-photo-' + crypto.randomUUID(), page_id: id, order_index: photos.length, created_at: new Date().toISOString() }
+      const updated = [...photos, localPhoto]
+      setPhotos(updated)
+      saveLocalPageData(id, { ...getLocalPageData(id), photos: updated })
+      setEditingPhoto(null)
+      showMessage('Foto guardada localmente')
     }
   }
 
   const updatePhotoSettings = async () => {
     if (!editingPhoto || !editingPhoto.id) return
     try {
-      const res = await fetch(`${API_URL}/corazon/pages/${id}/photos/${editingPhoto.id}`, {
+      const res = await fetchWithTimeout(`${API_URL}/corazon/pages/${id}/photos/${editingPhoto.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', 'x-user-id': user.id },
         body: JSON.stringify({ duration_ms: editingPhoto.duration_ms, transition_type: editingPhoto.transition_type })
       })
       if (!res.ok) throw new Error('Error al actualizar foto')
       const updated = await res.json()
-      setPhotos(photos.map(p => p.id === updated.id ? { ...p, ...updated } : p))
+      const newPhotos = photos.map(p => p.id === updated.id ? { ...p, ...updated } : p)
+      setPhotos(newPhotos)
+      saveLocalPageData(id, { ...getLocalPageData(id), photos: newPhotos })
       setEditingPhoto(null)
       showMessage('Foto actualizada')
     } catch (err) {
-      console.error('Error:', err)
-      showMessage('Error al actualizar foto')
+      console.error('Error actualizando foto:', err)
+      const newPhotos = photos.map(p => p.id === editingPhoto.id ? { ...p, duration_ms: editingPhoto.duration_ms, transition_type: editingPhoto.transition_type } : p)
+      setPhotos(newPhotos)
+      saveLocalPageData(id, { ...getLocalPageData(id), photos: newPhotos })
+      setEditingPhoto(null)
+      showMessage('Foto actualizada localmente')
     }
   }
 
   const deletePhoto = async (photoId) => {
     if (!confirm('¿Eliminar esta foto?')) return
     try {
-      const res = await fetch(`${API_URL}/corazon/pages/${id}/photos/${photoId}`, {
+      const res = await fetchWithTimeout(`${API_URL}/corazon/pages/${id}/photos/${photoId}`, {
         method: 'DELETE',
         headers: { 'x-user-id': user.id }
       })
       if (!res.ok) throw new Error('Error al eliminar foto')
-      setPhotos(photos.filter(p => p.id !== photoId))
+      const newPhotos = photos.filter(p => p.id !== photoId)
+      setPhotos(newPhotos)
+      saveLocalPageData(id, { ...getLocalPageData(id), photos: newPhotos })
       showMessage('Foto eliminada')
     } catch (err) {
-      console.error('Error:', err)
-      showMessage('Error al eliminar foto')
+      console.error('Error eliminando foto:', err)
+      const newPhotos = photos.filter(p => p.id !== photoId)
+      setPhotos(newPhotos)
+      saveLocalPageData(id, { ...getLocalPageData(id), photos: newPhotos })
+      showMessage('Foto eliminada localmente')
     }
   }
 
   const saveLetter = async () => {
     try {
-      const res = await fetch(`${API_URL}/corazon/pages/${id}/letter`, {
+      const res = await fetchWithTimeout(`${API_URL}/corazon/pages/${id}/letter`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', 'x-user-id': user.id },
         body: JSON.stringify(letter)
       })
       if (!res.ok) throw new Error('Error al guardar carta')
+      saveLocalPageData(id, { ...getLocalPageData(id), letter })
       showMessage('Carta guardada')
     } catch (err) {
-      console.error('Error:', err)
-      showMessage('Error al guardar carta')
+      console.error('Error guardando carta:', err)
+      saveLocalPageData(id, { ...getLocalPageData(id), letter })
+      showMessage('Carta guardada localmente')
     }
   }
 
   const saveTimeline = async () => {
     try {
-      const res = await fetch(`${API_URL}/corazon/pages/${id}/timeline`, {
+      const res = await fetchWithTimeout(`${API_URL}/corazon/pages/${id}/timeline`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', 'x-user-id': user.id },
         body: JSON.stringify({ items: timeline })
       })
       if (!res.ok) throw new Error('Error al guardar historia')
+      saveLocalPageData(id, { ...getLocalPageData(id), timeline })
       showMessage('Historia guardada')
     } catch (err) {
-      console.error('Error:', err)
-      showMessage('Error al guardar historia')
+      console.error('Error guardando historia:', err)
+      saveLocalPageData(id, { ...getLocalPageData(id), timeline })
+      showMessage('Historia guardada localmente')
     }
   }
 
   const saveSettings = async (newSettings) => {
     try {
-      const res = await fetch(`${API_URL}/corazon/pages/${id}/settings`, {
+      const res = await fetchWithTimeout(`${API_URL}/corazon/pages/${id}/settings`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', 'x-user-id': user.id },
         body: JSON.stringify(newSettings)
@@ -214,10 +256,13 @@ export default function PageEditor({ user }) {
       if (!res.ok) throw new Error('Error al guardar ajustes')
       const data = await res.json()
       setSettings(data)
+      saveLocalPageData(id, { ...getLocalPageData(id), settings: data })
       showMessage('Ajustes guardados')
     } catch (err) {
-      console.error('Error:', err)
-      showMessage('Error al guardar ajustes')
+      console.error('Error guardando ajustes:', err)
+      setSettings(newSettings)
+      saveLocalPageData(id, { ...getLocalPageData(id), settings: newSettings })
+      showMessage('Ajustes guardados localmente')
     }
   }
 

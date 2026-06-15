@@ -3,12 +3,14 @@ import { Link } from 'react-router-dom'
 import { Heart, Plus, Eye, Image, Film, ExternalLink, QrCode } from 'lucide-react'
 
 import { API_URL } from '../config'
+import { getLocalPages, saveLocalPage, generateLocalSlug, fetchWithTimeout } from '../lib/offlineStore'
 
 export default function Dashboard({ user }) {
   const [pages, setPages] = useState([])
   const [showCreate, setShowCreate] = useState(false)
   const [newPage, setNewPage] = useState({ corazonName: '', flechaName: '' })
   const [loading, setLoading] = useState(true)
+  const [offlineMode, setOfflineMode] = useState(false)
 
   useEffect(() => {
     fetchPages()
@@ -16,11 +18,15 @@ export default function Dashboard({ user }) {
 
   const fetchPages = async () => {
     try {
-      const res = await fetch(`${API_URL}/corazon/pages`, { headers: { 'x-user-id': user.id } })
+      const res = await fetchWithTimeout(`${API_URL}/corazon/pages`, { headers: { 'x-user-id': user.id } })
       const data = await res.json()
-      setPages(data)
+      const serverPages = Array.isArray(data) ? data : []
+      setPages(serverPages)
+      serverPages.forEach(p => saveLocalPage(user.id, p))
     } catch (err) {
-      console.error('Error:', err)
+      console.error('Error cargando paginas:', err)
+      setOfflineMode(true)
+      setPages(getLocalPages(user.id))
     }
     setLoading(false)
   }
@@ -28,17 +34,42 @@ export default function Dashboard({ user }) {
   const createPage = async (e) => {
     e.preventDefault()
     try {
-      const res = await fetch(`${API_URL}/corazon/pages`, {
+      const res = await fetchWithTimeout(`${API_URL}/corazon/pages`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-user-id': user.id },
         body: JSON.stringify(newPage)
       })
       const page = await res.json()
-      setPages([page, ...pages])
+      const updated = [page, ...pages]
+      setPages(updated)
+      saveLocalPage(user.id, page)
       setShowCreate(false)
       setNewPage({ corazonName: '', flechaName: '' })
     } catch (err) {
-      console.error('Error:', err)
+      console.error('Error creando pagina:', err)
+      const page = {
+        id: 'local-' + crypto.randomUUID(),
+        corazon_id: user.id,
+        corazon_name: newPage.corazonName,
+        flecha_name: newPage.flechaName,
+        page_slug: generateLocalSlug(newPage.flechaName || 'mi-amor') + '-' + Date.now().toString(36),
+        hero_title: 'Mi Amor',
+        hero_subtitle: '',
+        hero_date_text: '',
+        status: 'draft',
+        is_public: false,
+        view_count: 0,
+        photos_count: 0,
+        videos_count: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      }
+      const updated = [page, ...pages]
+      setPages(updated)
+      saveLocalPage(user.id, page)
+      setOfflineMode(true)
+      setShowCreate(false)
+      setNewPage({ corazonName: '', flechaName: '' })
     }
   }
 
@@ -81,6 +112,11 @@ export default function Dashboard({ user }) {
   return (
     <div className="min-h-screen p-6 md:p-8">
       <div className="max-w-6xl mx-auto">
+        {offlineMode && (
+          <div className="mb-4 p-3 rounded-xl bg-amber-500/20 border border-amber-500/30 text-amber-400 text-sm text-center">
+            Modo sin conexion activado. Tus paginas se guardan en este navegador.
+          </div>
+        )}
         <div className="flex items-center justify-between mb-8">
           <div>
             <h1 className="font-playfair text-3xl md:text-4xl text-gradient-romantic mb-2">Mis Paginas de Amor</h1>

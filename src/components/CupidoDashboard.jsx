@@ -3,10 +3,17 @@ import { Users, Eye, FileText, BarChart3, Crown } from 'lucide-react'
 
 import { API_URL } from '../config'
 
+function fetchWithTimeout(url, options = {}, ms = 5000) {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), ms)
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timeoutId))
+}
+
 export default function CupidoDashboard({ user }) {
   const [stats, setStats] = useState(null)
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
+  const [offlineMode, setOfflineMode] = useState(false)
 
   useEffect(() => {
     fetchData()
@@ -15,8 +22,8 @@ export default function CupidoDashboard({ user }) {
   const fetchData = async () => {
     try {
       const [statsRes, usersRes] = await Promise.all([
-        fetch(`${API_URL}/cupido/stats`),
-        fetch(`${API_URL}/cupido/users`)
+        fetchWithTimeout(`${API_URL}/cupido/stats`),
+        fetchWithTimeout(`${API_URL}/cupido/users`)
       ])
       const statsData = await statsRes.json()
       const usersData = await usersRes.json()
@@ -24,6 +31,9 @@ export default function CupidoDashboard({ user }) {
       setUsers(usersData)
     } catch (err) {
       console.error('Error:', err)
+      setOfflineMode(true)
+      setStats({ total_users: 0, total_pages: 0, total_views: 0, published_pages: 0 })
+      setUsers([])
     }
     setLoading(false)
   }
@@ -35,6 +45,11 @@ export default function CupidoDashboard({ user }) {
   return (
     <div className="min-h-screen p-6 md:p-8">
       <div className="max-w-6xl mx-auto">
+        {offlineMode && (
+          <div className="mb-4 p-3 rounded-xl bg-amber-500/20 border border-amber-500/30 text-amber-400 text-sm text-center">
+            Modo sin conexion activado. Panel de Cupido no disponible offline.
+          </div>
+        )}
         <div className="flex items-center gap-4 mb-8">
           <Crown className="w-10 h-10 text-amber-400" />
           <div>
