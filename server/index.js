@@ -38,6 +38,11 @@ app.use((req, res, next) => {
   next()
 })
 
+// Health check que NO requiere base de datos - DEBE estar PRIMERO
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() })
+})
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_y4O3WKQGIxhC@ep-bold-king-ahp3zu9v-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require',
   connectionTimeoutMillis: 10000,
