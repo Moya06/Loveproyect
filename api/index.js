@@ -1,1 +1,2 @@
-export { default } from '../server/index.js'
+import handler from '../server/index.js'
+export default handler
