@@ -300,13 +300,32 @@ app.post('/api/auth/register', async (req, res) => {
 
 app.get('/api/auth/verify/:token', async (req, res) => {
   try {
+    const { token } = req.params
+    
+    if (!token) {
+      return res.status(400).json({ error: 'Token requerido' })
+    }
+    
+    console.log(`Verificando token: ${token}`)
+    
     const result = await pool.query(
       'SELECT * FROM users WHERE verification_token = $1 AND verification_expires > NOW()',
-      [req.params.token]
+      [token]
     )
     
+    console.log(`Token encontrado: ${result.rows.length > 0}`)
+    
     if (result.rows.length === 0) {
-      return res.status(400).json({ error: 'Token invalido o expirado' })
+      // Buscar si el token existe pero está expirado
+      const expiredCheck = await pool.query(
+        'SELECT * FROM users WHERE verification_token = $1',
+        [token]
+      )
+      
+      if (expiredCheck.rows.length > 0) {
+        return res.status(400).json({ error: 'Token expirado. Solicita uno nuevo.' })
+      }
+      return res.status(400).json({ error: 'Token invalido' })
     }
     
     await pool.query(
@@ -314,9 +333,11 @@ app.get('/api/auth/verify/:token', async (req, res) => {
       [result.rows[0].id]
     )
     
+    console.log(`Usuario verificado: ${result.rows[0].email}`)
     res.json({ success: true, message: 'Cuenta verificada correctamente' })
   } catch (err) {
-    res.status(500).json({ error: 'Error al verificar' })
+    console.error('Error en verificacion:', err.message)
+    res.status(500).json({ error: 'Error al verificar: ' + err.message })
   }
 })
 
