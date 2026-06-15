@@ -43,12 +43,48 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() })
 })
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_y4O3WKQGIxhC@ep-bold-king-ahp3zu9v-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require',
-  connectionTimeoutMillis: 5000,
-  idleTimeoutMillis: 30000,
-  max: 2,
-})
+const isVercel = process.env.VERCEL === '1' || process.env.VERCEL === 'true'
+
+// En Vercel, si la base de datos no esta configurada explicitamente con
+// DATABASE_URL, evitamos crear conexiones que se quedan colgadas y causan
+// timeouts de 300 segundos. En local se usa la cadena por defecto.
+const dbUrl = isVercel ? process.env.DATABASE_URL : (process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_y4O3WKQGIxhC@ep-bold-king-ahp3zu9v-pooler.c-3.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require')
+
+let dbDisabled = !dbUrl
+let pool = null
+
+if (!dbDisabled) {
+  pool = new Pool({
+    connectionString: dbUrl,
+    connectionTimeoutMillis: 3000,
+    idleTimeoutMillis: 5000,
+    max: 2,
+  })
+
+  pool.on('error', (err) => {
+    console.error('Error inesperado del pool de PostgreSQL:', err.message)
+    dbDisabled = true
+  })
+}
+
+// Wrapper para queries con timeout y deshabilitacion automatica
+function queryWithTimeout(text, params, timeoutMs = 3000) {
+  if (dbDisabled) {
+    return Promise.reject(new Error('Base de datos deshabilitada'))
+  }
+  return Promise.race([
+    pool.query(text, params),
+    new Promise((_, reject) =>
+      setTimeout(() => {
+        dbDisabled = true
+        reject(new Error('Timeout de base de datos'))
+      }, timeoutMs)
+    )
+  ]).catch(err => {
+    dbDisabled = true
+    throw err
+  })
+}
 
 // Fallback en memoria para autenticacion cuando la BD no este disponible
 const memoryUsers = new Map()
@@ -86,7 +122,7 @@ async function initializeDatabase() {
     try {
       console.log('Inicializando base de datos...')
 
-      await pool.query(`
+      await queryWithTimeout(`
         CREATE TABLE IF NOT EXISTS users (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           email VARCHAR(255) UNIQUE NOT NULL,
@@ -100,12 +136,12 @@ async function initializeDatabase() {
         )
       `)
 
-      await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)`)
-      await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verified BOOLEAN DEFAULT false`)
-      await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token VARCHAR(100)`)
-      await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_expires TIMESTAMP`)
+      await queryWithTimeout(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)`)
+      await queryWithTimeout(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verified BOOLEAN DEFAULT false`)
+      await queryWithTimeout(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token VARCHAR(100)`)
+      await queryWithTimeout(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_expires TIMESTAMP`)
 
-      await pool.query(`
+      await queryWithTimeout(`
         CREATE TABLE IF NOT EXISTS love_pages (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           corazon_id UUID REFERENCES users(id) ON DELETE CASCADE,
@@ -124,7 +160,7 @@ async function initializeDatabase() {
         )
       `)
 
-      await pool.query(`
+      await queryWithTimeout(`
         CREATE TABLE IF NOT EXISTS page_timeline (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           page_id UUID REFERENCES love_pages(id) ON DELETE CASCADE,
@@ -137,7 +173,7 @@ async function initializeDatabase() {
         )
       `)
 
-      await pool.query(`
+      await queryWithTimeout(`
         CREATE TABLE IF NOT EXISTS page_photos (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           page_id UUID REFERENCES love_pages(id) ON DELETE CASCADE,
@@ -149,7 +185,7 @@ async function initializeDatabase() {
         )
       `)
 
-      await pool.query(`
+      await queryWithTimeout(`
         CREATE TABLE IF NOT EXISTS page_letter (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           page_id UUID REFERENCES love_pages(id) ON DELETE CASCADE UNIQUE,
@@ -159,7 +195,7 @@ async function initializeDatabase() {
         )
       `)
 
-      await pool.query(`
+      await queryWithTimeout(`
         CREATE TABLE IF NOT EXISTS page_videos (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           page_id UUID REFERENCES love_pages(id) ON DELETE CASCADE,
@@ -173,7 +209,7 @@ async function initializeDatabase() {
         )
       `)
 
-      await pool.query(`
+      await queryWithTimeout(`
         CREATE TABLE IF NOT EXISTS animations (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           name VARCHAR(100) NOT NULL,
@@ -183,7 +219,7 @@ async function initializeDatabase() {
         )
       `)
 
-      await pool.query(`
+      await queryWithTimeout(`
         CREATE TABLE IF NOT EXISTS page_settings (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           page_id UUID REFERENCES love_pages(id) ON DELETE CASCADE UNIQUE,
@@ -196,11 +232,11 @@ async function initializeDatabase() {
         )
       `)
 
-      await pool.query(`ALTER TABLE page_settings ADD COLUMN IF NOT EXISTS background_audio TEXT`)
+      await queryWithTimeout(`ALTER TABLE page_settings ADD COLUMN IF NOT EXISTS background_audio TEXT`)
 
-      await pool.query(`CREATE INDEX IF NOT EXISTS idx_pages_slug ON love_pages(page_slug)`)
-      await pool.query(`CREATE INDEX IF NOT EXISTS idx_pages_corazon ON love_pages(corazon_id)`)
-      await pool.query(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`)
+      await queryWithTimeout(`CREATE INDEX IF NOT EXISTS idx_pages_slug ON love_pages(page_slug)`)
+      await queryWithTimeout(`CREATE INDEX IF NOT EXISTS idx_pages_corazon ON love_pages(corazon_id)`)
+      await queryWithTimeout(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`)
 
       const defaultAnimations = [
         { name: 'Fade In', type: 'fade_in', config: { from: 0, to: 1 }, duration_ms: 1000 },
@@ -213,7 +249,7 @@ async function initializeDatabase() {
 
       for (const anim of defaultAnimations) {
         try {
-          await pool.query(
+          await queryWithTimeout(
             'INSERT INTO animations (name, type, config, duration_ms) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING',
             [anim.name, anim.type, JSON.stringify(anim.config), anim.duration_ms]
           )
@@ -344,7 +380,7 @@ app.post('/api/auth/register', async (req, res) => {
     const passwordHash = hashPassword(password)
 
     try {
-      const existing = await pool.query('SELECT id FROM users WHERE email = $1', [email])
+      const existing = await queryWithTimeout('SELECT id FROM users WHERE email = $1', [email])
       if (existing.rows.length > 0) {
         return res.status(400).json({ error: 'Este email ya esta registrado' })
       }
@@ -352,7 +388,7 @@ app.post('/api/auth/register', async (req, res) => {
       const token = generateToken()
       const expires = new Date(Date.now() + 24 * 60 * 60 * 1000)
 
-      await pool.query(
+      await queryWithTimeout(
         'INSERT INTO users (email, password_hash, name, verification_token, verification_expires) VALUES ($1, $2, $3, $4, $5)',
         [email, passwordHash, name, token, expires]
       )
@@ -406,7 +442,7 @@ app.get('/api/auth/verify/:token', async (req, res) => {
     
     console.log(`Verificando token: ${token}`)
     
-    const result = await pool.query(
+    const result = await queryWithTimeout(
       'SELECT * FROM users WHERE verification_token = $1 AND verification_expires > NOW()',
       [token]
     )
@@ -415,7 +451,7 @@ app.get('/api/auth/verify/:token', async (req, res) => {
     
     if (result.rows.length === 0) {
       // Buscar si el token existe pero está expirado
-      const expiredCheck = await pool.query(
+      const expiredCheck = await queryWithTimeout(
         'SELECT * FROM users WHERE verification_token = $1',
         [token]
       )
@@ -426,7 +462,7 @@ app.get('/api/auth/verify/:token', async (req, res) => {
       return res.status(400).json({ error: 'Token invalido' })
     }
     
-    await pool.query(
+    await queryWithTimeout(
       'UPDATE users SET verified = true, verification_token = NULL, verification_expires = NULL WHERE id = $1',
       [result.rows[0].id]
     )
@@ -450,7 +486,7 @@ app.post('/api/auth/login', async (req, res) => {
     const passwordHash = hashPassword(password)
 
     try {
-      const result = await pool.query('SELECT * FROM users WHERE email = $1', [email])
+      const result = await queryWithTimeout('SELECT * FROM users WHERE email = $1', [email])
 
       if (result.rows.length > 0) {
         const user = result.rows[0]
@@ -486,7 +522,7 @@ app.post('/api/auth/login', async (req, res) => {
 
 app.get('/api/users/:id', async (req, res) => {
   try {
-    const result = await pool.query('SELECT id, email, name, role, created_at FROM users WHERE id = $1', [req.params.id])
+    const result = await queryWithTimeout('SELECT id, email, name, role, created_at FROM users WHERE id = $1', [req.params.id])
     if (result.rows.length === 0) return res.status(404).json({ error: 'No encontrado' })
     res.json(result.rows[0])
   } catch (err) {
@@ -496,7 +532,7 @@ app.get('/api/users/:id', async (req, res) => {
 
 app.get('/api/cupido/users', async (req, res) => {
   try {
-    const result = await pool.query(`
+    const result = await queryWithTimeout(`
       SELECT u.id, u.email, u.name, u.role, u.created_at,
         (SELECT COUNT(*) FROM love_pages WHERE corazon_id = u.id) as pages_count,
         (SELECT COALESCE(SUM(view_count), 0) FROM love_pages WHERE corazon_id = u.id) as total_views
@@ -513,7 +549,7 @@ app.get('/api/corazon/pages', async (req, res) => {
     const userId = req.headers['x-user-id']
     if (!userId) return res.status(401).json({ error: 'No autorizado' })
     
-    const result = await pool.query(`
+    const result = await queryWithTimeout(`
       SELECT lp.*, 
         (SELECT COUNT(*) FROM page_photos WHERE page_id = lp.id) as photos_count,
         (SELECT COUNT(*) FROM page_videos WHERE page_id = lp.id AND status = 'completed') as videos_count
@@ -533,7 +569,7 @@ app.post('/api/corazon/pages', async (req, res) => {
     const { flechaName, corazonName, hero_title, hero_subtitle, hero_date_text, counter_start_date } = req.body
     const slug = `${uuidv4().slice(0, 8)}-${Date.now().toString(36)}`
     
-    const result = await pool.query(`
+    const result = await queryWithTimeout(`
       INSERT INTO love_pages (corazon_id, flecha_name, corazon_name, page_slug, hero_title, hero_subtitle, hero_date_text, counter_start_date)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       RETURNING *
@@ -559,7 +595,7 @@ app.post('/api/corazon/pages', async (req, res) => {
     
     for (let i = 0; i < defaultTimeline.length; i++) {
       const item = defaultTimeline[i]
-      await pool.query(`
+      await queryWithTimeout(`
         INSERT INTO page_timeline (page_id, order_index, date_label, title, description, icon, color)
         VALUES ($1, $2, $3, $4, $5, $6, $7)
       `, [page.id, i, item.date_label, item.title, item.description, item.icon, item.color])
@@ -571,12 +607,12 @@ Desde que llegaste, todo tiene mas color, mas sentido. Contigo aprendi que el am
 
 Gracias por cada momento, por cada risa, por cada sueno compartido. Esto es solo el comienzo de una historia que quiero escribir a tu lado para siempre.`
     
-    await pool.query(`
+    await queryWithTimeout(`
       INSERT INTO page_letter (page_id, content, signature_text, greeting)
       VALUES ($1, $2, $3, $4)
     `, [page.id, defaultLetter, 'Con todo mi amor, tu Corazon', 'Mi amor,'])
     
-    await pool.query(`
+    await queryWithTimeout(`
       INSERT INTO page_settings (page_id, theme_colors, fonts, celebration_enabled, particle_effects)
       VALUES ($1, $2, $3, $4, $5)
     `, [page.id, JSON.stringify({ primary: '#e74c3c', secondary: '#f39c12', background: '#0a0a0f' }), JSON.stringify({ heading: 'Playfair Display', body: 'Inter', script: 'Great Vibes' }), true, true])
@@ -593,24 +629,24 @@ app.get('/api/corazon/pages/:id', async (req, res) => {
     const userId = req.headers['x-user-id']
     const pageId = req.params.id
     
-    const page = await pool.query('SELECT * FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
+    const page = await queryWithTimeout('SELECT * FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
     if (page.rows.length === 0) return res.status(404).json({ error: 'Pagina no encontrada' })
     
-    const timeline = await pool.query('SELECT * FROM page_timeline WHERE page_id = $1 ORDER BY order_index', [pageId])
-    const photos = await pool.query(`
+    const timeline = await queryWithTimeout('SELECT * FROM page_timeline WHERE page_id = $1 ORDER BY order_index', [pageId])
+    const photos = await queryWithTimeout(`
       SELECT id,
         CASE WHEN image_data LIKE 'data:%' THEN image_data ELSE 'data:image/jpeg;base64,' || image_data END as image_data,
         CASE WHEN thumbnail_data LIKE 'data:%' THEN thumbnail_data ELSE 'data:image/jpeg;base64,' || thumbnail_data END as thumbnail_data,
         order_index, duration_ms, transition_type
       FROM page_photos WHERE page_id = $1 ORDER BY order_index
     `, [pageId])
-    const letter = await pool.query('SELECT * FROM page_letter WHERE page_id = $1', [pageId])
-    const settings = await pool.query(`
+    const letter = await queryWithTimeout('SELECT * FROM page_letter WHERE page_id = $1', [pageId])
+    const settings = await queryWithTimeout(`
       SELECT id, page_id, theme_colors, fonts, custom_css, celebration_enabled, particle_effects,
         CASE WHEN background_audio LIKE 'data:%' OR background_audio IS NULL THEN background_audio ELSE 'data:audio/mpeg;base64,' || background_audio END as background_audio
       FROM page_settings WHERE page_id = $1
     `, [pageId])
-    const videos = await pool.query('SELECT * FROM page_videos WHERE page_id = $1 ORDER BY created_at DESC', [pageId])
+    const videos = await queryWithTimeout('SELECT * FROM page_videos WHERE page_id = $1 ORDER BY created_at DESC', [pageId])
     
     res.json({
       ...page.rows[0],
@@ -647,7 +683,7 @@ app.patch('/api/corazon/pages/:id', async (req, res) => {
     updates.push(`updated_at = CURRENT_TIMESTAMP`)
     values.push(pageId, userId)
     
-    const result = await pool.query(
+    const result = await queryWithTimeout(
       `UPDATE love_pages SET ${updates.join(', ')} WHERE id = $${idx++} AND corazon_id = $${idx} RETURNING *`,
       values
     )
@@ -662,7 +698,7 @@ app.patch('/api/corazon/pages/:id', async (req, res) => {
 app.delete('/api/corazon/pages/:id', async (req, res) => {
   try {
     const userId = req.headers['x-user-id']
-    const result = await pool.query('DELETE FROM love_pages WHERE id = $1 AND corazon_id = $2 RETURNING id', [req.params.id, userId])
+    const result = await queryWithTimeout('DELETE FROM love_pages WHERE id = $1 AND corazon_id = $2 RETURNING id', [req.params.id, userId])
     if (result.rows.length === 0) return res.status(404).json({ error: 'No encontrado' })
     res.json({ success: true })
   } catch (err) {
@@ -672,30 +708,30 @@ app.delete('/api/corazon/pages/:id', async (req, res) => {
 
 app.get('/api/page/:slug', async (req, res) => {
   try {
-    const page = await pool.query('SELECT * FROM love_pages WHERE page_slug = $1', [req.params.slug])
+    const page = await queryWithTimeout('SELECT * FROM love_pages WHERE page_slug = $1', [req.params.slug])
     if (page.rows.length === 0) return res.status(404).json({ error: 'Pagina no encontrada' })
     
     if (page.rows[0].status !== 'published' && page.rows[0].status !== 'draft') {
       return res.status(404).json({ error: 'Pagina no disponible' })
     }
     
-    await pool.query('UPDATE love_pages SET view_count = view_count + 1 WHERE id = $1', [page.rows[0].id])
+    await queryWithTimeout('UPDATE love_pages SET view_count = view_count + 1 WHERE id = $1', [page.rows[0].id])
     
-    const timeline = await pool.query('SELECT * FROM page_timeline WHERE page_id = $1 ORDER BY order_index', [page.rows[0].id])
-    const photos = await pool.query(`
+    const timeline = await queryWithTimeout('SELECT * FROM page_timeline WHERE page_id = $1 ORDER BY order_index', [page.rows[0].id])
+    const photos = await queryWithTimeout(`
       SELECT id,
         CASE WHEN image_data LIKE 'data:%' THEN image_data ELSE 'data:image/jpeg;base64,' || image_data END as image_data,
         CASE WHEN thumbnail_data LIKE 'data:%' THEN thumbnail_data ELSE 'data:image/jpeg;base64,' || thumbnail_data END as thumbnail_data,
         order_index, duration_ms, transition_type
       FROM page_photos WHERE page_id = $1 ORDER BY order_index
     `, [page.rows[0].id])
-    const letter = await pool.query('SELECT * FROM page_letter WHERE page_id = $1', [page.rows[0].id])
-    const settings = await pool.query(`
+    const letter = await queryWithTimeout('SELECT * FROM page_letter WHERE page_id = $1', [page.rows[0].id])
+    const settings = await queryWithTimeout(`
       SELECT id, page_id, theme_colors, fonts, custom_css, celebration_enabled, particle_effects,
         CASE WHEN background_audio LIKE 'data:%' OR background_audio IS NULL THEN background_audio ELSE 'data:audio/mpeg;base64,' || background_audio END as background_audio
       FROM page_settings WHERE page_id = $1
     `, [page.rows[0].id])
-    const videos = await pool.query(`
+    const videos = await queryWithTimeout(`
       SELECT id, page_id, corazon_id, status, progress, title, created_at, completed_at
       FROM page_videos WHERE page_id = $1 AND status = 'completed' ORDER BY created_at DESC
     `, [page.rows[0].id])
@@ -716,24 +752,24 @@ app.get('/api/page/:slug', async (req, res) => {
 
 app.get('/api/page/:slug/full', async (req, res) => {
   try {
-    const page = await pool.query('SELECT * FROM love_pages WHERE page_slug = $1', [req.params.slug])
+    const page = await queryWithTimeout('SELECT * FROM love_pages WHERE page_slug = $1', [req.params.slug])
     if (page.rows.length === 0) return res.status(404).json({ error: 'Pagina no encontrada' })
     
-    const timeline = await pool.query('SELECT * FROM page_timeline WHERE page_id = $1 ORDER BY order_index', [page.rows[0].id])
-    const photos = await pool.query(`
+    const timeline = await queryWithTimeout('SELECT * FROM page_timeline WHERE page_id = $1 ORDER BY order_index', [page.rows[0].id])
+    const photos = await queryWithTimeout(`
       SELECT id,
         CASE WHEN image_data LIKE 'data:%' THEN image_data ELSE 'data:image/jpeg;base64,' || image_data END as image_data,
         CASE WHEN thumbnail_data LIKE 'data:%' THEN thumbnail_data ELSE 'data:image/jpeg;base64,' || thumbnail_data END as thumbnail_data,
         order_index, duration_ms, transition_type
       FROM page_photos WHERE page_id = $1 ORDER BY order_index
     `, [page.rows[0].id])
-    const letter = await pool.query('SELECT * FROM page_letter WHERE page_id = $1', [page.rows[0].id])
-    const settings = await pool.query(`
+    const letter = await queryWithTimeout('SELECT * FROM page_letter WHERE page_id = $1', [page.rows[0].id])
+    const settings = await queryWithTimeout(`
       SELECT id, page_id, theme_colors, fonts, custom_css, celebration_enabled, particle_effects,
         CASE WHEN background_audio LIKE 'data:%' OR background_audio IS NULL THEN background_audio ELSE 'data:audio/mpeg;base64,' || background_audio END as background_audio
       FROM page_settings WHERE page_id = $1
     `, [page.rows[0].id])
-    const videos = await pool.query(`
+    const videos = await queryWithTimeout(`
       SELECT pv.*, pv.id as video_id FROM page_videos pv WHERE pv.page_id = $1 AND pv.status = 'completed'
     `, [page.rows[0].id])
     
@@ -756,20 +792,20 @@ app.patch('/api/corazon/pages/:id/timeline', async (req, res) => {
     const pageId = req.params.id
     const { items } = req.body
     
-    const pageCheck = await pool.query('SELECT id FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
+    const pageCheck = await queryWithTimeout('SELECT id FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
     if (pageCheck.rows.length === 0) return res.status(404).json({ error: 'No encontrado' })
     
-    await pool.query('DELETE FROM page_timeline WHERE page_id = $1', [pageId])
+    await queryWithTimeout('DELETE FROM page_timeline WHERE page_id = $1', [pageId])
     
     for (let i = 0; i < items.length; i++) {
       const item = items[i]
-      await pool.query(`
+      await queryWithTimeout(`
         INSERT INTO page_timeline (page_id, order_index, date_label, title, description, icon, color)
         VALUES ($1, $2, $3, $4, $5, $6, $7)
       `, [pageId, i, item.date_label, item.title, item.description, item.icon, item.color])
     }
     
-    const result = await pool.query('SELECT * FROM page_timeline WHERE page_id = $1 ORDER BY order_index', [pageId])
+    const result = await queryWithTimeout('SELECT * FROM page_timeline WHERE page_id = $1 ORDER BY order_index', [pageId])
     res.json(result.rows)
   } catch (err) {
     res.status(500).json({ error: 'Error' })
@@ -786,10 +822,10 @@ app.patch('/api/corazon/pages/:id/photos', async (req, res) => {
       return res.status(400).json({ error: 'El campo photos debe ser un array' })
     }
 
-    const pageCheck = await pool.query('SELECT id FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
+    const pageCheck = await queryWithTimeout('SELECT id FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
     if (pageCheck.rows.length === 0) return res.status(404).json({ error: 'No encontrado' })
 
-    await pool.query('DELETE FROM page_photos WHERE page_id = $1', [pageId])
+    await queryWithTimeout('DELETE FROM page_photos WHERE page_id = $1', [pageId])
 
     for (let i = 0; i < photos.length; i++) {
       const photo = photos[i]
@@ -800,13 +836,13 @@ app.patch('/api/corazon/pages/:id/photos', async (req, res) => {
       const imageData = String(photo.image_data).includes(',') ? String(photo.image_data).split(',')[1] : photo.image_data
       const thumbSource = photo.thumbnail_data || photo.image_data
       const thumbData = String(thumbSource).includes(',') ? String(thumbSource).split(',')[1] : thumbSource
-      await pool.query(`
+      await queryWithTimeout(`
         INSERT INTO page_photos (page_id, image_data, thumbnail_data, order_index, duration_ms, transition_type)
         VALUES ($1, $2, $3, $4, $5, $6)
       `, [pageId, imageData, thumbData, i, photo.duration_ms || 6000, photo.transition_type || 'fade'])
     }
 
-    const result = await pool.query(`
+    const result = await queryWithTimeout(`
       SELECT id,
         CASE WHEN image_data LIKE 'data:%' THEN image_data ELSE 'data:image/jpeg;base64,' || image_data END as image_data,
         CASE WHEN thumbnail_data LIKE 'data:%' THEN thumbnail_data ELSE 'data:image/jpeg;base64,' || thumbnail_data END as thumbnail_data,
@@ -830,17 +866,17 @@ app.post('/api/corazon/pages/:id/photos', async (req, res) => {
       return res.status(400).json({ error: 'image_data es requerido' })
     }
 
-    const pageCheck = await pool.query('SELECT id FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
+    const pageCheck = await queryWithTimeout('SELECT id FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
     if (pageCheck.rows.length === 0) return res.status(404).json({ error: 'No encontrado' })
 
     const imageData = String(image_data).includes(',') ? String(image_data).split(',')[1] : image_data
     const thumbSource = thumbnail_data || image_data
     const thumbData = String(thumbSource).includes(',') ? String(thumbSource).split(',')[1] : thumbSource
 
-    const countResult = await pool.query('SELECT COUNT(*) as count FROM page_photos WHERE page_id = $1', [pageId])
+    const countResult = await queryWithTimeout('SELECT COUNT(*) as count FROM page_photos WHERE page_id = $1', [pageId])
     const orderIndex = parseInt(countResult.rows[0].count)
 
-    const result = await pool.query(`
+    const result = await queryWithTimeout(`
       INSERT INTO page_photos (page_id, image_data, thumbnail_data, order_index, duration_ms, transition_type)
       VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING id, page_id, order_index, duration_ms, transition_type
@@ -862,14 +898,14 @@ app.delete('/api/corazon/pages/:id/photos/:photoId', async (req, res) => {
     const pageId = req.params.id
     const photoId = req.params.photoId
 
-    const pageCheck = await pool.query('SELECT id FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
+    const pageCheck = await queryWithTimeout('SELECT id FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
     if (pageCheck.rows.length === 0) return res.status(404).json({ error: 'No encontrado' })
 
-    await pool.query('DELETE FROM page_photos WHERE id = $1 AND page_id = $2', [photoId, pageId])
+    await queryWithTimeout('DELETE FROM page_photos WHERE id = $1 AND page_id = $2', [photoId, pageId])
 
-    const remaining = await pool.query('SELECT id FROM page_photos WHERE page_id = $1 ORDER BY order_index', [pageId])
+    const remaining = await queryWithTimeout('SELECT id FROM page_photos WHERE page_id = $1 ORDER BY order_index', [pageId])
     for (let i = 0; i < remaining.rows.length; i++) {
-      await pool.query('UPDATE page_photos SET order_index = $1 WHERE id = $2', [i, remaining.rows[i].id])
+      await queryWithTimeout('UPDATE page_photos SET order_index = $1 WHERE id = $2', [i, remaining.rows[i].id])
     }
 
     res.json({ success: true })
@@ -886,7 +922,7 @@ app.patch('/api/corazon/pages/:id/photos/:photoId', async (req, res) => {
     const photoId = req.params.photoId
     const { duration_ms, transition_type } = req.body
 
-    const pageCheck = await pool.query('SELECT id FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
+    const pageCheck = await queryWithTimeout('SELECT id FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
     if (pageCheck.rows.length === 0) return res.status(404).json({ error: 'No encontrado' })
 
     const updates = []
@@ -901,7 +937,7 @@ app.patch('/api/corazon/pages/:id/photos/:photoId', async (req, res) => {
     }
 
     values.push(photoId, pageId)
-    const result = await pool.query(`
+    const result = await queryWithTimeout(`
       UPDATE page_photos SET ${updates.join(', ')} WHERE id = $${idx++} AND page_id = $${idx}
       RETURNING id, order_index, duration_ms, transition_type
     `, values)
@@ -920,10 +956,10 @@ app.patch('/api/corazon/pages/:id/letter', async (req, res) => {
     const pageId = req.params.id
     const { content, signature_text, greeting } = req.body
     
-    const pageCheck = await pool.query('SELECT id FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
+    const pageCheck = await queryWithTimeout('SELECT id FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
     if (pageCheck.rows.length === 0) return res.status(404).json({ error: 'No encontrado' })
     
-    const result = await pool.query(`
+    const result = await queryWithTimeout(`
       INSERT INTO page_letter (page_id, content, signature_text, greeting)
       VALUES ($1, $2, $3, $4)
       ON CONFLICT (page_id) DO UPDATE SET
@@ -945,14 +981,14 @@ app.patch('/api/corazon/pages/:id/settings', async (req, res) => {
     const pageId = req.params.id
     const { theme_colors, fonts, custom_css, celebration_enabled, particle_effects, background_audio } = req.body
 
-    const pageCheck = await pool.query('SELECT id FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
+    const pageCheck = await queryWithTimeout('SELECT id FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
     if (pageCheck.rows.length === 0) return res.status(404).json({ error: 'No encontrado' })
 
     const audioData = background_audio !== undefined
       ? (String(background_audio).includes(',') ? String(background_audio).split(',')[1] : background_audio)
       : undefined
 
-    const result = await pool.query(`
+    const result = await queryWithTimeout(`
       INSERT INTO page_settings (page_id, theme_colors, fonts, custom_css, celebration_enabled, particle_effects, background_audio)
       VALUES ($1, $2, $3, $4, $5, $6, $7)
       ON CONFLICT (page_id) DO UPDATE SET
@@ -981,13 +1017,13 @@ app.post('/api/corazon/pages/:id/generate-video', async (req, res) => {
     const userId = req.headers['x-user-id']
     const pageId = req.params.id
 
-    const pageCheck = await pool.query('SELECT * FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
+    const pageCheck = await queryWithTimeout('SELECT * FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
     if (pageCheck.rows.length === 0) return res.status(404).json({ error: 'No encontrado' })
 
-    const photos = await pool.query('SELECT image_data, duration_ms, transition_type FROM page_photos WHERE page_id = $1 ORDER BY order_index', [pageId])
+    const photos = await queryWithTimeout('SELECT image_data, duration_ms, transition_type FROM page_photos WHERE page_id = $1 ORDER BY order_index', [pageId])
     if (photos.rows.length < 2) return res.status(400).json({ error: 'Necesitas al menos 2 fotos' })
 
-    const videoResult = await pool.query(`
+    const videoResult = await queryWithTimeout(`
       INSERT INTO page_videos (page_id, corazon_id, status, progress, title)
       VALUES ($1, $2, 'processing', 0, $3)
       RETURNING *
@@ -1003,7 +1039,7 @@ app.post('/api/corazon/pages/:id/generate-video', async (req, res) => {
       const buffer = Buffer.from(rawImageData, 'base64')
       const framePath = path.join(framesDir, `frame_${String(i).padStart(4, '0')}.jpg`)
       fs.writeFileSync(framePath, buffer)
-      await pool.query('UPDATE page_videos SET progress = $1 WHERE id = $2', [Math.floor(((i + 1) / photos.rows.length) * 40), video.id])
+      await queryWithTimeout('UPDATE page_videos SET progress = $1 WHERE id = $2', [Math.floor(((i + 1) / photos.rows.length) * 40), video.id])
     }
 
     const outputPath = path.join(__dirname, 'videos', `${video.id}.mp4`)
@@ -1034,18 +1070,18 @@ app.post('/api/corazon/pages/:id/generate-video', async (req, res) => {
         .outputOptions(['-c:v libx264', '-preset medium', '-crf 23', '-pix_fmt yuv420p', '-vf', scaleFilter, '-r', '30'])
         .output(outputPath)
         .on('progress', async (progress) => {
-          await pool.query('UPDATE page_videos SET progress = $1 WHERE id = $2', [40 + Math.floor((progress.percent || 0) * 0.6), video.id])
+          await queryWithTimeout('UPDATE page_videos SET progress = $1 WHERE id = $2', [40 + Math.floor((progress.percent || 0) * 0.6), video.id])
         })
         .on('end', async () => {
           try {
             const videoData = fs.readFileSync(outputPath)
-            await pool.query(
+            await queryWithTimeout(
               "UPDATE page_videos SET status = 'completed', progress = 100, output_data = $1, completed_at = CURRENT_TIMESTAMP WHERE id = $2",
               [videoData.toString('base64'), video.id]
             )
           } catch (e) {
             console.error('Error saving video:', e)
-            await pool.query("UPDATE page_videos SET status = 'error' WHERE id = $1", [video.id])
+            await queryWithTimeout("UPDATE page_videos SET status = 'error' WHERE id = $1", [video.id])
           }
           try {
             fs.unlinkSync(concatFile)
@@ -1055,7 +1091,7 @@ app.post('/api/corazon/pages/:id/generate-video', async (req, res) => {
         })
         .on('error', async (err) => {
           console.error('FFmpeg concat error:', err.message)
-          await pool.query("UPDATE page_videos SET status = 'error' WHERE id = $1", [video.id])
+          await queryWithTimeout("UPDATE page_videos SET status = 'error' WHERE id = $1", [video.id])
         })
         .run()
     }
@@ -1103,18 +1139,18 @@ app.post('/api/corazon/pages/:id/generate-video', async (req, res) => {
         .outputOptions(['-map', `[${finalLabel}]`, '-c:v', 'libx264', '-preset', 'medium', '-crf', '23', '-pix_fmt', 'yuv420p'])
         .output(outputPath)
         .on('progress', async (progress) => {
-          await pool.query('UPDATE page_videos SET progress = $1 WHERE id = $2', [40 + Math.floor((progress.percent || 0) * 0.6), video.id])
+          await queryWithTimeout('UPDATE page_videos SET progress = $1 WHERE id = $2', [40 + Math.floor((progress.percent || 0) * 0.6), video.id])
         })
         .on('end', async () => {
           try {
             const videoData = fs.readFileSync(outputPath)
-            await pool.query(
+            await queryWithTimeout(
               "UPDATE page_videos SET status = 'completed', progress = 100, output_data = $1, completed_at = CURRENT_TIMESTAMP WHERE id = $2",
               [videoData.toString('base64'), video.id]
             )
           } catch (e) {
             console.error('Error saving video:', e)
-            await pool.query("UPDATE page_videos SET status = 'error' WHERE id = $1", [video.id])
+            await queryWithTimeout("UPDATE page_videos SET status = 'error' WHERE id = $1", [video.id])
           }
           try {
             fs.rmSync(framesDir, { recursive: true, force: true })
@@ -1123,12 +1159,12 @@ app.post('/api/corazon/pages/:id/generate-video', async (req, res) => {
         })
         .on('error', async (err) => {
           console.error('FFmpeg xfade error:', err.message)
-          await pool.query("UPDATE page_videos SET status = 'error' WHERE id = $1", [video.id])
+          await queryWithTimeout("UPDATE page_videos SET status = 'error' WHERE id = $1", [video.id])
         })
         .run()
     }
 
-    await pool.query('UPDATE page_videos SET progress = 42 WHERE id = $1', [video.id])
+    await queryWithTimeout('UPDATE page_videos SET progress = 42 WHERE id = $1', [video.id])
 
     buildTransitionVideo()
 
@@ -1144,10 +1180,10 @@ app.get('/api/corazon/pages/:id/videos', async (req, res) => {
     const userId = req.headers['x-user-id']
     const pageId = req.params.id
     
-    const pageCheck = await pool.query('SELECT id FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
+    const pageCheck = await queryWithTimeout('SELECT id FROM love_pages WHERE id = $1 AND corazon_id = $2', [pageId, userId])
     if (pageCheck.rows.length === 0) return res.status(404).json({ error: 'No encontrado' })
     
-    const videos = await pool.query('SELECT * FROM page_videos WHERE page_id = $1 ORDER BY created_at DESC', [pageId])
+    const videos = await queryWithTimeout('SELECT * FROM page_videos WHERE page_id = $1 ORDER BY created_at DESC', [pageId])
     res.json(videos.rows)
   } catch (err) {
     res.status(500).json({ error: 'Error' })
@@ -1156,7 +1192,7 @@ app.get('/api/corazon/pages/:id/videos', async (req, res) => {
 
 app.get('/api/videos/:id/stream', async (req, res) => {
   try {
-    const result = await pool.query('SELECT output_data FROM page_videos WHERE id = $1', [req.params.id])
+    const result = await queryWithTimeout('SELECT output_data FROM page_videos WHERE id = $1', [req.params.id])
     if (result.rows.length === 0 || !result.rows[0].output_data) return res.status(404).json({ error: 'Video no encontrado' })
     
     const videoData = Buffer.from(result.rows[0].output_data, 'base64')
@@ -1170,7 +1206,7 @@ app.get('/api/videos/:id/stream', async (req, res) => {
 
 app.get('/api/animations', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM animations ORDER BY name')
+    const result = await queryWithTimeout('SELECT * FROM animations ORDER BY name')
     res.json(result.rows)
   } catch (err) {
     res.status(500).json({ error: 'Error' })
@@ -1179,10 +1215,10 @@ app.get('/api/animations', async (req, res) => {
 
 app.get('/api/cupido/stats', async (req, res) => {
   try {
-    const usersCount = await pool.query('SELECT COUNT(*) FROM users WHERE role != $1', ['cupido'])
-    const pagesCount = await pool.query('SELECT COUNT(*) FROM love_pages')
-    const totalViews = await pool.query('SELECT COALESCE(SUM(view_count), 0) as total FROM love_pages')
-    const publishedPages = await pool.query("SELECT COUNT(*) FROM love_pages WHERE status = 'published'")
+    const usersCount = await queryWithTimeout('SELECT COUNT(*) FROM users WHERE role != $1', ['cupido'])
+    const pagesCount = await queryWithTimeout('SELECT COUNT(*) FROM love_pages')
+    const totalViews = await queryWithTimeout('SELECT COALESCE(SUM(view_count), 0) as total FROM love_pages')
+    const publishedPages = await queryWithTimeout("SELECT COUNT(*) FROM love_pages WHERE status = 'published'")
     
     res.json({
       total_users: parseInt(usersCount.rows[0].count),
