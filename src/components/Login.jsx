@@ -31,9 +31,16 @@ export default function Login({ onLogin, onCupidoLogin }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       })
-      const data = await res.json()
+      let data
+      try {
+        data = await res.json()
+      } catch (parseErr) {
+        // response was not JSON - read as text and throw
+        const text = await res.text().catch(() => '')
+        throw new Error(text || `HTTP ${res.status}`)
+      }
       
-      if (!res.ok) throw new Error(data.error)
+      if (!res.ok) throw new Error(data.error || data || `HTTP ${res.status}`)
       
       if (isRegister) {
         setSuccess(data.message)
@@ -45,9 +52,10 @@ export default function Login({ onLogin, onCupidoLogin }) {
         onLogin(data)
       }
     } catch (err) {
-      setError(err.message)
+      setError(err.message || 'Error de servidor')
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   const handleCupidoLogin = () => {
