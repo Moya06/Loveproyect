@@ -77,20 +77,57 @@ export default function Login({ onLogin, onCupidoLogin }) {
     setVerificationUrl('')
 
     const tryOffline = () => {
+      const email = form.email.toLowerCase()
+      const users = getLocalUsers()
+      const exists = !!users[email]
+
       if (isRegister) {
-        const result = registerOffline(form.name, form.email, form.password)
-        if (result.error) {
-          setError(result.error)
+        if (exists) {
+          // Si ya existe, intentar iniciar sesion
+          const user = loginOffline(form.email, form.password)
+          if (user) {
+            onLogin(user)
+          } else {
+            setError('Este email ya esta registrado con otra contrasena')
+          }
         } else {
-          setSuccess('Cuenta creada localmente. Ahora puedes iniciar sesion.')
-          setForm({ ...form, password: '' })
+          const result = registerOffline(form.name, form.email, form.password)
+          if (result.error) {
+            setError(result.error)
+          } else {
+            onLogin({
+              id: result.user.id,
+              email: result.user.email,
+              name: result.user.name,
+              role: 'corazon',
+              verified: true,
+              created_at: result.user.created_at
+            })
+          }
         }
       } else {
-        const user = loginOffline(form.email, form.password)
-        if (user) {
-          onLogin(user)
+        if (exists) {
+          const user = loginOffline(form.email, form.password)
+          if (user) {
+            onLogin(user)
+          } else {
+            setError('Contrasena incorrecta (modo local)')
+          }
         } else {
-          setError('Email o contrasena incorrectos (modo local)')
+          // Auto-registrar e iniciar sesion con cualquier email/contrasena
+          const result = registerOffline(form.email.split('@')[0] || 'Usuario', form.email, form.password)
+          if (result.error) {
+            setError(result.error)
+          } else {
+            onLogin({
+              id: result.user.id,
+              email: result.user.email,
+              name: result.user.name,
+              role: 'corazon',
+              verified: true,
+              created_at: result.user.created_at
+            })
+          }
         }
       }
     }
