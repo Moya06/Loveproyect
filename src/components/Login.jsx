@@ -4,6 +4,61 @@ import { Link } from 'react-router-dom'
 
 import { API_URL } from '../config'
 
+const LOCAL_USERS_KEY = 'amor_local_users'
+const LOCAL_SESSION_KEY = 'amor_user'
+
+function getLocalUsers() {
+  try {
+    return JSON.parse(localStorage.getItem(LOCAL_USERS_KEY) || '{}')
+  } catch {
+    return {}
+  }
+}
+
+function saveLocalUsers(users) {
+  localStorage.setItem(LOCAL_USERS_KEY, JSON.stringify(users))
+}
+
+function hashOfflinePassword(password) {
+  let hash = 0
+  for (let i = 0; i < password.length; i++) {
+    hash = ((hash << 5) - hash) + password.charCodeAt(i)
+    hash |= 0
+  }
+  return String(hash)
+}
+
+function loginOffline(email, password) {
+  const users = getLocalUsers()
+  const user = users[email.toLowerCase()]
+  if (!user) return null
+  if (user.passwordHash !== hashOfflinePassword(password)) return null
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    role: 'corazon',
+    verified: true,
+    created_at: user.created_at
+  }
+}
+
+function registerOffline(name, email, password) {
+  const users = getLocalUsers()
+  const key = email.toLowerCase()
+  if (users[key]) return { error: 'Este email ya esta registrado' }
+  const newUser = {
+    id: 'local-' + crypto.randomUUID(),
+    email: key,
+    name,
+    passwordHash: hashOfflinePassword(password),
+    created_at: new Date().toISOString()
+  }
+  users[key] = newUser
+  saveLocalUsers(users)
+  return { success: true, user: newUser }
+}
+
 export default function Login({ onLogin, onCupidoLogin }) {
   const [isRegister, setIsRegister] = useState(false)
   const [form, setForm] = useState({ name: '', email: '', password: '' })
@@ -21,6 +76,25 @@ export default function Login({ onLogin, onCupidoLogin }) {
     setSuccess('')
     setVerificationUrl('')
 
+    const tryOffline = () => {
+      if (isRegister) {
+        const result = registerOffline(form.name, form.email, form.password)
+        if (result.error) {
+          setError(result.error)
+        } else {
+          setSuccess('Cuenta creada localmente. Ahora puedes iniciar sesion.')
+          setForm({ ...form, password: '' })
+        }
+      } else {
+        const user = loginOffline(form.email, form.password)
+        if (user) {
+          onLogin(user)
+        } else {
+          setError('Email o contrasena incorrectos (modo local)')
+        }
+      }
+    }
+
     try {
       const endpoint = isRegister ? '/auth/register' : '/auth/login'
       const body = isRegister
@@ -28,7 +102,7 @@ export default function Login({ onLogin, onCupidoLogin }) {
         : { email: form.email, password: form.password }
 
       const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 10000)
+      const timeoutId = setTimeout(() => controller.abort(), 5000)
 
       const res = await fetch(`${API_URL}${endpoint}`, {
         method: 'POST',
@@ -45,12 +119,18 @@ export default function Login({ onLogin, onCupidoLogin }) {
         data = await res.json()
       } else {
         const text = await res.text()
-        // Si la respuesta es HTML (error del servidor/proxy), mostrar mensaje util
         const cleanText = text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120)
         throw new Error(cleanText || `Error HTTP ${res.status}`)
       }
 
-      if (!res.ok) throw new Error(data.error || data.message || `Error HTTP ${res.status}`)
+      if (!res.ok) {
+        if (res.status >= 500) {
+          console.warn('Error del servidor, intentando modo local')
+          tryOffline()
+          return
+        }
+        throw new Error(data.error || data.message || `Error HTTP ${res.status}`)
+      }
 
       if (isRegister) {
         setSuccess(data.message)
@@ -63,8 +143,9 @@ export default function Login({ onLogin, onCupidoLogin }) {
       }
     } catch (err) {
       console.error('Login error:', err)
-      if (err.name === 'AbortError') {
-        setError('El servidor tardo demasiado en responder. Intenta de nuevo.')
+      if (err.name === 'AbortError' || err.message?.includes('fetch') || err.message?.includes('network')) {
+        console.warn('Servidor no responde, usando modo local')
+        tryOffline()
       } else {
         setError(err.message || 'No se pudo conectar con el servidor. Intenta de nuevo.')
       }
