@@ -45,139 +45,166 @@ const pool = new Pool({
   max: 10,
 })
 
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS users (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email VARCHAR(255) UNIQUE NOT NULL,
-    name VARCHAR(100) NOT NULL,
-    password_hash VARCHAR(255),
-    role VARCHAR(20) DEFAULT 'corazon',
-    verified BOOLEAN DEFAULT false,
-    verification_token VARCHAR(100),
-    verification_expires TIMESTAMP,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )
-`)
-
-await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)`)
-await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verified BOOLEAN DEFAULT false`)
-await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token VARCHAR(100)`)
-await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_expires TIMESTAMP`)
-
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS love_pages (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    corazon_id UUID REFERENCES users(id) ON DELETE CASCADE,
-    flecha_name VARCHAR(100),
-    corazon_name VARCHAR(100),
-    page_slug VARCHAR(100) UNIQUE NOT NULL,
-    hero_title VARCHAR(255) DEFAULT 'Mi Amor',
-    hero_subtitle VARCHAR(255),
-    hero_date_text VARCHAR(255),
-    counter_start_date DATE,
-    status VARCHAR(20) DEFAULT 'draft',
-    is_public BOOLEAN DEFAULT false,
-    view_count INTEGER DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )
-`)
-
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS page_timeline (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    page_id UUID REFERENCES love_pages(id) ON DELETE CASCADE,
-    order_index INTEGER DEFAULT 0,
-    date_label VARCHAR(100),
-    title VARCHAR(255),
-    description TEXT,
-    icon VARCHAR(50),
-    color VARCHAR(50)
-  )
-`)
-
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS page_photos (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    page_id UUID REFERENCES love_pages(id) ON DELETE CASCADE,
-    image_data TEXT NOT NULL,
-    thumbnail_data TEXT,
-    order_index INTEGER DEFAULT 0,
-    duration_ms INTEGER DEFAULT 6000,
-    transition_type VARCHAR(50) DEFAULT 'fade'
-  )
-`)
-
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS page_letter (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    page_id UUID REFERENCES love_pages(id) ON DELETE CASCADE UNIQUE,
-    content TEXT,
-    signature_text VARCHAR(255),
-    greeting VARCHAR(100) DEFAULT 'Mi amor,'
-  )
-`)
-
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS page_videos (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    page_id UUID REFERENCES love_pages(id) ON DELETE CASCADE,
-    corazon_id UUID REFERENCES users(id),
-    output_data TEXT,
-    status VARCHAR(20) DEFAULT 'pending',
-    progress INTEGER DEFAULT 0,
-    title VARCHAR(255),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    completed_at TIMESTAMP
-  )
-`)
-
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS animations (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name VARCHAR(100) NOT NULL,
-    type VARCHAR(50) NOT NULL,
-    config JSONB DEFAULT '{}',
-    duration_ms INTEGER DEFAULT 1000
-  )
-`)
-
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS page_settings (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    page_id UUID REFERENCES love_pages(id) ON DELETE CASCADE UNIQUE,
-    theme_colors JSONB DEFAULT '{"primary": "#e74c3c", "secondary": "#f39c12", "background": "#0a0a0f"}',
-    fonts JSONB DEFAULT '{"heading": "Playfair Display", "body": "Inter", "script": "Great Vibes"}',
-    custom_css TEXT,
-    celebration_enabled BOOLEAN DEFAULT true,
-    particle_effects BOOLEAN DEFAULT true,
-    background_audio TEXT
-  )
-`)
-
-await pool.query(`ALTER TABLE page_settings ADD COLUMN IF NOT EXISTS background_audio TEXT`)
-
-await pool.query(`CREATE INDEX IF NOT EXISTS idx_pages_slug ON love_pages(page_slug)`)
-await pool.query(`CREATE INDEX IF NOT EXISTS idx_pages_corazon ON love_pages(corazon_id)`)
-await pool.query(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`)
-
-const defaultAnimations = [
-  { name: 'Fade In', type: 'fade_in', config: { from: 0, to: 1 }, duration_ms: 1000 },
-  { name: 'Fade Out', type: 'fade_out', config: { from: 1, to: 0 }, duration_ms: 1000 },
-  { name: 'Slide Left', type: 'slide', config: { direction: 'left' }, duration_ms: 800 },
-  { name: 'Slide Right', type: 'slide', config: { direction: 'right' }, duration_ms: 800 },
-  { name: 'Zoom In', type: 'zoom', config: { from: 1, to: 1.3 }, duration_ms: 1500 },
-  { name: 'Cross Dissolve', type: 'crossdissolve', config: {}, duration_ms: 1500 },
-]
-
-for (const anim of defaultAnimations) {
+// Lazy initialization - crear tablas solo cuando sea necesario
+let dbInitialized = false
+async function initializeDatabase() {
+  if (dbInitialized || process.env.SKIP_DB_INIT === 'true') return
+  
   try {
-    await pool.query(
-      'INSERT INTO animations (name, type, config, duration_ms) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING',
-      [anim.name, anim.type, JSON.stringify(anim.config), anim.duration_ms]
-    )
-  } catch (e) {}
+    console.log('Inicializando base de datos...')
+    
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        email VARCHAR(255) UNIQUE NOT NULL,
+        name VARCHAR(100) NOT NULL,
+        password_hash VARCHAR(255),
+        role VARCHAR(20) DEFAULT 'corazon',
+        verified BOOLEAN DEFAULT false,
+        verification_token VARCHAR(100),
+        verification_expires TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `)
+
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255)`)
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verified BOOLEAN DEFAULT false`)
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_token VARCHAR(100)`)
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verification_expires TIMESTAMP`)
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS love_pages (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        corazon_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        flecha_name VARCHAR(100),
+        corazon_name VARCHAR(100),
+        page_slug VARCHAR(100) UNIQUE NOT NULL,
+        hero_title VARCHAR(255) DEFAULT 'Mi Amor',
+        hero_subtitle VARCHAR(255),
+        hero_date_text VARCHAR(255),
+        counter_start_date DATE,
+        status VARCHAR(20) DEFAULT 'draft',
+        is_public BOOLEAN DEFAULT false,
+        view_count INTEGER DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `)
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS page_timeline (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        page_id UUID REFERENCES love_pages(id) ON DELETE CASCADE,
+        order_index INTEGER DEFAULT 0,
+        date_label VARCHAR(100),
+        title VARCHAR(255),
+        description TEXT,
+        icon VARCHAR(50),
+        color VARCHAR(50)
+      )
+    `)
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS page_photos (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        page_id UUID REFERENCES love_pages(id) ON DELETE CASCADE,
+        image_data TEXT NOT NULL,
+        thumbnail_data TEXT,
+        order_index INTEGER DEFAULT 0,
+        duration_ms INTEGER DEFAULT 6000,
+        transition_type VARCHAR(50) DEFAULT 'fade'
+      )
+    `)
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS page_letter (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        page_id UUID REFERENCES love_pages(id) ON DELETE CASCADE UNIQUE,
+        content TEXT,
+        signature_text VARCHAR(255),
+        greeting VARCHAR(100) DEFAULT 'Mi amor,'
+      )
+    `)
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS page_videos (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        page_id UUID REFERENCES love_pages(id) ON DELETE CASCADE,
+        corazon_id UUID REFERENCES users(id),
+        output_data TEXT,
+        status VARCHAR(20) DEFAULT 'pending',
+        progress INTEGER DEFAULT 0,
+        title VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        completed_at TIMESTAMP
+      )
+    `)
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS animations (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name VARCHAR(100) NOT NULL,
+        type VARCHAR(50) NOT NULL,
+        config JSONB DEFAULT '{}',
+        duration_ms INTEGER DEFAULT 1000
+      )
+    `)
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS page_settings (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        page_id UUID REFERENCES love_pages(id) ON DELETE CASCADE UNIQUE,
+        theme_colors JSONB DEFAULT '{"primary": "#e74c3c", "secondary": "#f39c12", "background": "#0a0a0f"}',
+        fonts JSONB DEFAULT '{"heading": "Playfair Display", "body": "Inter", "script": "Great Vibes"}',
+        custom_css TEXT,
+        celebration_enabled BOOLEAN DEFAULT true,
+        particle_effects BOOLEAN DEFAULT true,
+        background_audio TEXT
+      )
+    `)
+
+    await pool.query(`ALTER TABLE page_settings ADD COLUMN IF NOT EXISTS background_audio TEXT`)
+
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_pages_slug ON love_pages(page_slug)`)
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_pages_corazon ON love_pages(corazon_id)`)
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`)
+
+    const defaultAnimations = [
+      { name: 'Fade In', type: 'fade_in', config: { from: 0, to: 1 }, duration_ms: 1000 },
+      { name: 'Fade Out', type: 'fade_out', config: { from: 1, to: 0 }, duration_ms: 1000 },
+      { name: 'Slide Left', type: 'slide', config: { direction: 'left' }, duration_ms: 800 },
+      { name: 'Slide Right', type: 'slide', config: { direction: 'right' }, duration_ms: 800 },
+      { name: 'Zoom In', type: 'zoom', config: { from: 1, to: 1.3 }, duration_ms: 1500 },
+      { name: 'Cross Dissolve', type: 'crossdissolve', config: {}, duration_ms: 1500 },
+    ]
+
+    for (const anim of defaultAnimations) {
+      try {
+        await pool.query(
+          'INSERT INTO animations (name, type, config, duration_ms) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING',
+          [anim.name, anim.type, JSON.stringify(anim.config), anim.duration_ms]
+        )
+      } catch (e) {}
+    }
+    
+    dbInitialized = true
+    console.log('Base de datos inicializada correctamente')
+  } catch (err) {
+    console.error('Error inicializando base de datos:', err.message)
+    throw err
+  }
 }
+
+// Middleware para inicializar la BD en la primera solicitud
+app.use(async (req, res, next) => {
+  try {
+    await initializeDatabase()
+    next()
+  } catch (err) {
+    console.error('Error en middleware de inicialización:', err.message)
+    res.status(500).json({ error: 'Error de base de datos' })
+  }
+})
 
 const EMAIL_USER = process.env.EMAIL_USER || ''
 const EMAIL_PASS = process.env.EMAIL_PASS || ''
